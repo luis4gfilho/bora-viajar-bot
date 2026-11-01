@@ -7,14 +7,16 @@ import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-# Lê todos os IDs separados por vírgula (grupo e individuais)
 CHAT_IDS = [cid.strip() for cid in os.environ.get("CHAT_IDS", "").split(",") if cid.strip()]
 STATE_FILE = "monitor_state.json"
 
+# Feeds ampliados com canais focados em passagens e superpromoções
 FEEDS_RSS = {
     "Passageiro de Primeira": "https://passageirodeprimeira.com/category/promocoes/feed/",
     "Melhores Destinos": "https://www.melhoresdestinos.com.br/feed",
     "Melhores Cartões": "https://www.melhorescartoes.com.br/feed",
+    "Pontos pra Voar": "https://pontospravoar.com/feed/",
+    "Passagens Imperdíveis": "https://www.passagensimperdiveis.com.br/feed/",
 }
 
 PROGRAMAS = [
@@ -28,8 +30,18 @@ TERMOS_BONUS = [
     "pontos em dobro", "bônus de transferência", "isentaço", "cashback"
 ]
 
+# Termos focados na origem
 TERMOS_ORIGEM_RECIFE = ["recife", "rec", "pe", "nordeste"]
+
+# Termos para detectar menções a passagens normais
 TERMOS_PASSAGEM = ["passagens", "voos", "tarifa promocional", "trechos", "ida e volta", "passagem aérea"]
+
+# Termos de quedas históricas e anomalias de preço
+TERMOS_QUEDA_HISTORICA = [
+    "menor preço", "menor valor histórico", "preço despenca", "queda histórica",
+    "muito abaixo do normal", "menor preço do ano", "bug", "erro de tarifa",
+    "preço inacreditável", "tarifa imperdível", "superpromoção"
+]
 
 def carregar_estado():
     if os.path.exists(STATE_FILE):
@@ -62,29 +74,41 @@ def enviar_telegram(mensagem):
             print(f"Erro ao enviar para {chat_id}: {e}")
 
 def extrair_destaque(texto):
+    # Destaque de quedas extremas ou erros
+    for termo in TERMOS_QUEDA_HISTORICA:
+        if termo in texto.lower():
+            return f"🚨 <b>QUEDA HISTÓRICA / ANOMALIA:</b> <code>{termo.upper()}</code>\n"
+
+    # Destaque de bônus de milhas
     bonus_match = re.search(r"(\d{2,3}%\s*(?:de\s*)?b[ôo]nus)", texto, re.IGNORECASE)
     if bonus_match:
         return f"🔥 <b>BÔNUS:</b> <code>{bonus_match.group(1).upper()}</code>\n"
-
+    
+    # Destaque de tarifas em milhas
     milhas_match = re.search(r"(a\s+partir\s+de\s+[0-9\.]+\s*(?:milhas|pontos))", texto, re.IGNORECASE)
     if milhas_match:
         return f"✈️ <b>TARIFA:</b> <code>{milhas_match.group(1).upper()}</code>\n"
-
+    
     return ""
 
 def filtrar_noticia(titulo, resumo):
     conteudo = f"{titulo} {resumo}".lower()
-
-    # 1. Bônus e transferências de programas de fidelidade / cartões
+    
+    # 1. Bônus e transferências de programas de fidelidade / cartões (Geral)
     tem_programa = any(p in conteudo for p in PROGRAMAS)
     tem_acao_bonus = any(b in conteudo for b in TERMOS_BONUS)
     if tem_programa and tem_acao_bonus:
         return True
 
-    # 2. Promoções de passagens aéreas com foco em Recife
+    # 2. Passagens aéreas com origem em Recife
     e_passagem = any(v in conteudo for v in TERMOS_PASSAGEM)
     tem_origem_recife = any(origem in conteudo for origem in TERMOS_ORIGEM_RECIFE)
     if e_passagem and tem_origem_recife:
+        return True
+
+    # 3. Bugs ou quedas históricas explícitas com saída de Recife/Nordeste
+    tem_queda = any(q in conteudo for q in TERMOS_QUEDA_HISTORICA)
+    if tem_queda and tem_origem_recife:
         return True
 
     return False
@@ -118,13 +142,13 @@ def processar_feeds(estado):
         except Exception as e:
             print(f"Erro em {nome_fonte}: {e}")
 
-    estado["vistos"] = list(itens_vistos)[-300:]
+    # Mantém um histórico controlado dos últimos IDs processados
+    estado["vistos"] = list(itens_vistos)[-400:]
     return novas_alertas
 
 def monitorar():
     estado = carregar_estado()
-
-    # Na primeira corrida apenas inicializa a base de dados para evitar alertas retroativos
+    
     if "vistos" not in estado:
         print("Criando estado inicial de controle...")
         processar_feeds(estado)
